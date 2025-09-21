@@ -1,138 +1,106 @@
 return {
-  "neovim/nvim-lspconfig",
-  dependencies = {
-    "williamboman/mason-lspconfig.nvim",
-    "williamboman/mason.nvim",
-    "j-hui/fidget.nvim",
-    {
-      "folke/lazydev.nvim",
-      ft = "lua", -- only load on lua files
-      opts = {
-        library = {
-          -- See the configuration section for more details
-          -- Load luvit types when the `vim.uv` word is found
-          { path = "${3rd}/luv/library", words = { "vim%.uv" } },
-        },
+  {
+    "folke/lazydev.nvim",
+    ft = "lua",
+    opts = {
+      library = {
+        -- Load luvit types when the `vim.uv` word is found
+        { path = "${3rd}/luv/library", words = { "vim%.uv" } },
       },
     },
   },
+  {
+    "neovim/nvim-lspconfig",
+    dependencies = {
+      { "williamboman/mason.nvim", opts = {} },
+      "williamboman/mason-lspconfig.nvim",
+      "WhoIsSethDaniel/mason-tool-installer.nvim",
 
-  config = function()
-    require("lspconfig").lua_ls.setup {}
+      { "j-hui/fidget.nvim",       opts = {} },
+    },
+    config = function()
+      vim.api.nvim_create_autocmd("LspAttach", {
+        group = vim.api.nvim_create_augroup("kickstart-lsp-attach", { clear = true }),
+        callback = function(event)
+          local client = vim.lsp.get_client_by_id(event.data.client_id)
+          if client and client.supports_method(vim.lsp.protocol.Methods.textDocument_documentHighlight) then
+            local highlight_augroup =
+                vim.api.nvim_create_augroup("kickstart-lsp-highlight", { clear = false })
+            vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
+              buffer = event.buf,
+              group = highlight_augroup,
+              callback = vim.lsp.buf.document_highlight,
+            })
 
-    require("fidget").setup({})
-    require("mason").setup()
-    require("mason-lspconfig").setup({
-      ensure_installed = {
-        "lua_ls",
-        "rust_analyzer",
-        "ts_ls",
-        "clangd",
-        "gopls",
-      },
+            vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI" }, {
+              buffer = event.buf,
+              group = highlight_augroup,
+              callback = vim.lsp.buf.clear_references,
+            })
 
+            vim.api.nvim_create_autocmd("LspDetach", {
+              group = vim.api.nvim_create_augroup("kickstart-lsp-detach", { clear = true }),
+              callback = function(event2)
+                vim.lsp.buf.clear_references()
+                vim.api.nvim_clear_autocmds({ group = "kickstart-lsp-highlight", buffer = event2.buf })
+              end,
+            })
+          end
 
-      -- vim.api.nvim_create_autocmd('LspAttach', {
-      --   group = vim.api.nvim_create_augroup('my.lsp', {}),
-      --   callback = function(args)
-      --     local client = vim.lsp.get_client_by_id(args.data.client_id)
-      --     if not client then return end
-      --
-      --     if client:supports_method('textDocument/formatting') then
-      --       vim.api.nvim_create_autocmd('BufWritePre', {
-      --         group = vim.api.nvim_create_augroup('my.lsp', { clear = false }),
-      --         buffer = args.buf,
-      --         callback = function()
-      --           vim.lsp.buf.format({ bufnr = args.buf, id = client.id, timeout_ms = 1000 })
-      --         end,
-      --       })
-      --     end
-      --   end,
-      -- })
-      handlers = {
-        function(server_name) -- default handler (optional)
-          require("lspconfig")[server_name].setup {
-            capabilities = capabilities
-          }
-        end,
+          ---@diagnostic disable-next-line: need-check-nil
+          if client.supports_method("textDocument/formatting") then
+            vim.api.nvim_create_autocmd("BufWritePre", {
+              buffer = event.buf,
+              callback = function()
+                vim.lsp.buf.format({ bufnr = event.buf, id = client.id })
+              end,
+            })
+          end
+        end, -- <— this was missing
+      })
 
-        ["lua_ls"] = function()
-          local lspconfig = require("lspconfig")
-          lspconfig.lua_ls.setup {
-            capabilities = capabilities,
-            settings = {
-              Lua = {
-                diagnostics = {
-                  globals = { "vim", "it", "describe", "before_each", "after_each" },
-                }
-              }
-            }
-          }
-        end,
-
-        ["gopls"] = function()
-          local lspconfig = require("lspconfig")
-
-          -- Create the augroup ONCE (no global clearing here)
-          local fmt_group = vim.api.nvim_create_augroup("LspFormatOnSave", {})
-
-          lspconfig.gopls.setup {
-            capabilities = capabilities,
-            settings = { gopls = { gofumpt = true } },
-
-            on_attach = function(client, bufnr)
-              -- Prefer the API check; some servers use dynamic capability registration
-              if client.supports_method and client:supports_method("textDocument/formatting") then
-                -- Clear any existing autocmd for THIS buffer only
-                vim.api.nvim_clear_autocmds({ group = fmt_group, buffer = bufnr })
-
-                vim.api.nvim_create_autocmd("BufWritePre", {
-                  group = fmt_group,
-                  buffer = bufnr,
-                  callback = function()
-                    vim.lsp.buf.format({
-                      bufnr = bufnr,
-                      async = false,
-                      timeout_ms = 3000,
-                      -- ensure gopls is the one formatting
-                      filter = function(cl) return cl.name == "gopls" end,
-                    })
-                  end,
-                })
-              end
-            end,
-          }
-        end,
-
-        ["ts_ls"] = function()
-          local lspconfig = require("lspconfig")
-          lspconfig.tsserver.setup {
-            capabilities = capabilities,
-            on_attach = function(client, bufnr)
-              if client.server_capabilities.documentFormattingProvider then
-                vim.api.nvim_create_autocmd("BufWritePre", {
-                  buffer = bufnr,
-                  callback = function()
-                    vim.lsp.buf.format({ async = false })
-                  end,
-                })
-              end
-            end,
-          }
-        end,
+      local servers = {
+        clangd = {},
+        gopls = {},
+        pyright = {},
+        tailwindcss = {},
+        -- ... etc. See `:help lspconfig-all` for a list of all the pre-configured LSPs
+        --
+        -- Some languages (like typescript) have entire language plugins that can be useful:
+        --    https://github.com/pmizio/typescript-tools.nvim
+        --
+        ts_ls = {},
+        lua_ls = {
+          -- cmd = { ... },
+          -- filetypes = { ... },
+          -- capabilities = {},
+          settings = {
+            Lua = {
+              completion = {
+                callSnippet = "Replace",
+              },
+              -- You can toggle below to ignore Lua_LS's noisy `missing-fields` warnings
+              -- diagnostics = { disable = { 'missing-fields' } },
+            },
+          },
+        },
       }
-    })
 
-    vim.diagnostic.config({
-      -- update_in_insert = true,
-      float = {
-        focusable = false,
-        style = "minimal",
-        border = "rounded",
-        source = "always",
-        header = "",
-        prefix = "",
-      },
-    })
-  end
+      local ensure_installed = vim.tbl_keys(servers or {})
+      vim.list_extend(ensure_installed, {
+        "stylua",
+      })
+      require("mason-tool-installer").setup({ ensure_installed = ensure_installed })
+
+      require("mason-lspconfig").setup({
+        handlers = {
+          function(server_name)
+            local server = servers[server_name] or {}
+            server.capabilities = vim.tbl_deep_extend("force", {}, capabilities, server.capabilities or {})
+            require("lspconfig")[server_name].setup(server)
+          end,
+        },
+      })
+    end,
+  },
 }
